@@ -18,21 +18,21 @@ type SearchApiResult = {
 
 const MOCK_AGENT_REPLIES: Record<string, string[]> = {
   default: [
-    'Hey, this is Joye (well, a tiny mock of him).',
-    'Real agent endpoint is wiring up — for now I just rehearse lines.',
-    'Try `chat what are you building?` or `chat hire you?` for canned answers.'
+    'Hi, this is a lightweight terminal view for YinFeng\'s blog.',
+    'The current version focuses on reading content and quick navigation.',
+    'Try `search agent` or `cat about`.'
   ],
   building: [
-    'Right now: this terminal, an AI persona for the homepage,',
-    'and a few half-finished blog posts about Astro + RSC + agent UX.'
+    'Right now: keeping the blog on Astro,',
+    'and gradually replacing old template content with my own posts.'
   ],
   hire: [
-    'Open to chats — frontend / full-stack / AI-product roles.',
-    'Best path: `mail` (huangdeshiou@gmail.com) or `connect` for socials.'
+    'Best path: `mail` or `connect` for socials.',
+    'This terminal is mainly a content interface, not a hiring bot.'
   ],
   stack: [
-    'Astro 5 · React 19 · UnoCSS · TypeScript · deployed on Vercel.',
-    'I lean into server-rendered HTML with small interactive islands.'
+    'Astro 5 · React 19 · UnoCSS · TypeScript.',
+    'The live site is currently deployed as a static Astro build behind Nginx.'
   ]
 }
 
@@ -95,21 +95,20 @@ export const commands: CommandRegistry = {
 
   whoami: {
     name: 'whoami',
-    summary: 'about Joye',
+    summary: 'about YinFeng',
     run: ({ push }) => {
       push([
         {
           kind: 'node',
           node: (
             <span>
-              <span className='wt-tone-primary'>Joye</span>
-              <span className='wt-tone-muted'> · Frontend developer based in Melbourne</span>
+              <span className='wt-tone-primary'>YinFeng</span>
+              <span className='wt-tone-muted'> · personal blog owner</span>
             </span>
           )
         },
-        { kind: 'text', tone: 'muted', text: '  ↳ 2nd-year CS @ University of Melbourne' },
-        { kind: 'text', tone: 'muted', text: '  ↳ AIGC full-stack intern @ Tezign' },
-        { kind: 'text', tone: 'muted', text: '  ↳ stays hungry, stays foolish · plays piano + cello' },
+        { kind: 'text', tone: 'muted', text: '  ↳ writes about AI, Agent systems, and engineering notes' },
+        { kind: 'text', tone: 'muted', text: '  ↳ current site migrated from WordPress to Astro' },
         { kind: 'spacer' },
         { kind: 'text', tone: 'muted', text: 'next: try `ls`, `cat about`, or `cd /blog`' }
       ])
@@ -456,14 +455,14 @@ export const commands: CommandRegistry = {
     name: 'mail',
     summary: 'send me an email',
     run: ({ push }) => {
-      const href = 'mailto:huangdeshiou@gmail.com?subject=hi%20joye'
+      const href = 'mailto:3174898512@qq.com?subject=hi%20windchant'
       push([
         { kind: 'text', tone: 'muted', text: 'opening your mail client…' },
         {
           kind: 'node',
           node: (
             <a className='wt-link' href={href}>
-              huangdeshiou@gmail.com
+              3174898512@qq.com
             </a>
           )
         }

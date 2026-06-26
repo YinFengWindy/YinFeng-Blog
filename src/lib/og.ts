@@ -7,7 +7,7 @@ const avatarBuffer = fs.readFileSync(path.resolve('./src/assets/avatar.png'))
 const avatarDataUrl = `data:image/png;base64,${avatarBuffer.toString('base64')}`
 
 const PRIMARY = '#659EB9'
-const SITE = 'joyehuang.me'
+const SITE = 'windchant.online'
 const LATIN_CHARS =
   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:;!?@#$%&*()[]{}<>/\\|-_=+"\'` ·⭐'
 
@@ -165,9 +165,9 @@ export async function defaultOgPng(opts: {
         )
       ]
     ),
-    footerLine('Melbourne · Build fast, learn faster')
+    footerLine('windchant.online · YinFeng')
   ])
-  return renderPng(tree, opts.name + opts.tagline + 'Melbourne · Build fast, learn faster')
+  return renderPng(tree, opts.name + opts.tagline + 'windchant.online · YinFeng')
 }
 
 export async function postOgPng(opts: {

@@ -78,6 +78,10 @@ ignore.*
 bunfig.toml
 /src/content/blog/test.*
 /test/
+/client-deploy.tar.gz
+/client-deploy-py.tar.gz
+/server-source.tar.gz
+/server-source.zip
 
 # in-progress talk deck (local working copy, never commit/serve)
 /talk-deck-v2.html

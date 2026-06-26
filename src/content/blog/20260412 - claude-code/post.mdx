@@ -1,0 +1,293 @@
+---
+title: 'Claude Code的缓存命中，为什么能帮你省这么多钱？'
+description: '当你打开中转站去查找你的对话记录时，会明显察觉到除了输入输出token，还会有一个缓存读取token，而且这个缓存读取token的大小经常会是远远大于你的输入输出token。 很显然，这个缓存命中机制能帮你省下一大笔钱，那么它是怎么做到的呢？ 这篇文章，我会将Claude Code这套缓存命中机制讲清楚。 先说结论：C'
+publishDate: 2026-04-12 19:35:56
+heroImage:
+  src: ./hero.jpg
+  alt: 'Claude Code的缓存命中，为什么能帮你省这么多钱？'
+---
+import WordPressHtml from '@/components/blog/WordPressHtml.astro'
+
+<WordPressHtml html={String.raw`当你打开中转站去查找你的对话记录时，会明显察觉到除了输入输出token，还会有一个缓存读取token，而且这个缓存读取token的大小经常会是远远大于你的输入输出token。
+
+很显然，这个缓存命中机制能帮你省下一大笔钱，那么它是怎么做到的呢？
+
+这篇文章，我会将Claude Code这套缓存命中机制讲清楚。
+<h2>先说结论：Claude Code缓存的不是"答案"，而是"前缀"</h2>
+先纠正一个很容易误会的点。
+
+Claude Code这里说的缓存命中，并不是传统意义上的"问题一样，直接返回旧答案"。
+
+它主要命中的是<strong>输入侧的 prompt cache</strong>。
+
+从源码里的<code>usage</code>统计就能看出来，Claude Code关心的是：
+<ul>
+ 	<li><code>cache_creation_input_tokens</code></li>
+ 	<li><code>cache_read_input_tokens</code></li>
+</ul>
+而不是"output cache"。
+
+而结论中的"前缀"通常包括：
+<ul>
+ 	<li>system prompt的静态层</li>
+ 	<li>tools/schema</li>
+ 	<li>历史消息中较早的部分</li>
+ 	<li>某些 <code>cache_control</code>、<code>cache_reference</code> 相关结构</li>
+</ul>
+这意味着这套缓存命中机制真正在做的是：
+<ul>
+ 	<li>把 system prompt，tools，历史消息这些前缀组织好</li>
+ 	<li>告诉服务端哪些部分值得缓存</li>
+ 	<li>尽量保证下一轮请求时，前缀和上一轮足够一致</li>
+ 	<li>让服务端直接复用这一大段前缀的处理结果</li>
+</ul>
+所以，这套机制省的是<strong>"重新读老上下文"</strong>的成本，不是"重新生成回答"的成本。
+<h2>让"前缀"保持字节级别的稳定</h2>
+在读源码的过程中，我发现Claude Code做的大部分工作，都是尽量让"前缀"保持字节级别的稳定。
+
+也就是说：发给模型的请求里，前面的一大段内容，在序列化之后要尽量完全一致。
+
+所以，这里的"稳定"其实非常严格：
+<ul>
+ 	<li>文本要一样</li>
+ 	<li>顺序要一样</li>
+ 	<li>拼接方式要一样</li>
+ 	<li>schema序列化结果要一样</li>
+ 	<li>哪个message上挂了缓存标记也要一样</li>
+</ul>
+那么，很多具体实现细节就会变的相当敏感：
+<ul>
+ 	<li>system prompt的边界处理</li>
+ 	<li>工具的排序</li>
+ 	<li>tool schema的缓存</li>
+ 	<li>beta header的稳定性</li>
+ 	<li>子代理fork时是否重建system prompt</li>
+ 	<li>cache marker 放在哪些message上</li>
+</ul>
+总之，Claude Code是在努力维护<strong>一个尽可能长，尽可能稳定，尽可能可以复用的请求前缀</strong>。
+<h2>因此，为了保证"前缀"稳定，Claude Code为缓存命中做了一整套链路</h2>
+<ol>
+ 	<li>system prompt先被拆成稳定块和动态块</li>
+ 	<li>tool schema尽量写成session-stable结构</li>
+ 	<li>历史messages被精确地放置cache marker</li>
+ 	<li>旧工具结果用 <code>cache_reference</code> 绑定</li>
+ 	<li>长上下文时用 <code>cache_edits</code> 删除不必要的旧引用</li>
+ 	<li>fork子代理时共享前缀</li>
+ 	<li>请求前后再做 cache break 检测</li>
+</ol>
+<h3>一、system prompt</h3>
+Claude Code首先做的，就是把system prompt本身拆开
+
+在源码中，有一个特别关键的常量：<code>SYSTEM_PROMPT_DYNAMIC_BOUNDARY</code>
+
+它的作用非常直接：将system prompt分成静态和动态两部分
+<ul>
+ 	<li>边界前：认为是静态，跨会话稳定，适合缓存的内容</li>
+ 	<li>边界后：认为是动态，和用户/session/runtime相关的内容</li>
+</ul>
+Claude Code并不会傻傻地将system prompt当成一整块大字符串来处理，而是：
+<ul>
+ 	<li>把静态身份，通用规则，固定行为这些放在边界前</li>
+ 	<li>把 session guidance，memory，AGENT.md/CLAUDE.md这些更容易改动的内容放在边界后</li>
+</ul>
+边界前的稳定块承载主要缓存价值，边界后的动态块尽量不污染前缀。
+
+本质上就是在做：<strong>system prompt的前缀分层缓存。</strong>
+<h3>二、tool schema</h3>
+如果说system prompt是第一大前缀，那么tool schema就是第二大前缀。
+
+Claude Code的工具协议非常的厚，还带prompt，权限，UI渲染，语义标记等大量信息（这块后续也会更新）。但问题就来了：<strong>这些工具定义本身，也是会进入模型上下文的</strong>。
+
+这就意味着，一旦 tool schema 有变更，那么缓存就可能失效。
+
+Claude Code对此做了一个非常牛逼的处理：
+
+它不会每次都重新构造tool schema，而是将schema分成两层：
+<ul>
+ 	<li>session-stable base</li>
+ 	<li>per-request overlay</li>
+</ul>
+session-stable base 里面放的是：
+<ul>
+ 	<li>name：工具名称</li>
+ 	<li>description：工具说明</li>
+ 	<li>input_schema：工具参数</li>
+ 	<li>strict：入参要不要严格约束</li>
+ 	<li>eager_input_streaming：工具输入能不能更早流式输出</li>
+</ul>
+这些东西一旦确定，就尽量在整个session保持不变。
+
+per-request overlay里放的是可能每轮变化的字段，比如：
+<ul>
+ 	<li>defer_loading：这个工具先不要把完整的schema暴露给模型，而是仅告诉模型有这么个工具，等模型真正需要时，再通过<code>ToolSearch</code>之类的机制将它展开。</li>
+ 	<li>cache_control</li>
+</ul>
+Claude Code这里专门做了一套session级缓存，它会将session-stable base层缓存到内存中，在当前session内复用，避免：
+<ul>
+ 	<li>tool prompt偏移</li>
+ 	<li>同名工具 schema不一致</li>
+ 	<li>部分配置的冷热变化</li>
+</ul>
+这里的设计思路和<code>system prompt</code>非常相似，也是通过<strong>分层</strong>的方式来维持前缀缓存的命中率。
+<h3>三、message 历史</h3>
+system prompt 和 tools稳定之后，下一层就是消息历史。
+
+Claude Code这里的思路是：不将所有消息都缓存，而是通过一些marker去控制：
+<ul>
+ 	<li>在哪里放缓存边界</li>
+ 	<li>边界之前的哪些旧结果可以通过引用复用</li>
+ 	<li>哪些旧引用应该被删掉</li>
+</ul>
+这里有三个概念非常重要：
+<ul>
+ 	<li><code>cache_control</code></li>
+ 	<li><code>cache_reference</code></li>
+ 	<li><code>cache_edits</code></li>
+</ul>
+<h4><strong>1.<code>cache_control</code>是什么</strong></h4>
+cache_control 是 Claude Code 发给API的一个marker，大概长这样
+<pre><code class="language-ts">{
+  type: 'ephemeral',
+  ttl?: '5m' | '1h',
+  scope?: 'global' | 'org'
+}
+</code></pre>
+你可以把它理解成一张"标签"，这些字段的意思是这样：
+<ul>
+ 	<li>type: 'ephemeral' 表示这是一个临时的prompt cache，是为了后续请求复用前缀，用人话来说就是：“这段前缀现在值得缓存，后面短时间内可以继续复用”。</li>
+ 	<li>TTL：缓存存活时间</li>
+ 	<li>scope：决定缓存的共享范围，global指的是"这段前缀足够通用，可以跨大范围复用"，org意思是"这段前缀只在当前环境范围内复用"。</li>
+</ul>
+这个 <code>cache_control</code>主要打在<code>system prompt blocks</code> 以及 <code>messages</code> 中，但是tool schema层预留了 <code>cache_control</code> 能力。
+
+而且值得注意的是，注释中明确写到：每个请求只放一个<strong>message-level cache marker</strong>。
+
+这是为了让缓存边界更加稳定，避免多个marker让局部生命周期更复杂。
+
+通常情况，这个marker会放在最后一条message，意思是：
+<ul>
+ 	<li>这之前是公共前缀，这之后是当前轮新增内容</li>
+</ul>
+举个例子：
+<ol>
+ 	<li>用户消息 A</li>
+ 	<li>assistant/tool/result 若干</li>
+ 	<li>用户消息 B</li>
+ 	<li>在 B 的最后一个内容块上挂 cache_control</li>
+</ol>
+那意思就是：
+<ul>
+ 	<li>到 B 为止，这整段消息历史可以作为缓存前缀</li>
+ 	<li>后面新产生的 assistant 输出和新工具调用，作为"尾巴"追加在缓存前缀的后面。</li>
+</ul>
+<h4>2.<code>cache_reference</code>是什么</h4>
+<code>cache_reference</code> 是给旧 <code>tool_result</code>打上的引用锚点。
+
+它通常会设置成对应的 <code>tool_use_id</code>,作用是告诉服务端：
+
+<strong>这个旧工具结果已经在缓存前缀里了，后面可以通过这个引用识别并复用</strong>。
+
+这一步非常重要，因为在和Claude Code的对话里会有大量工具结果，而这些结果通常会很长，如果每一轮都把它们完整再塞一遍，成本会迅速膨胀。
+
+有了<code>cache_reference</code>，系统就可以更稳定地把工具结果纳入缓存前缀，而不是每次都当新内容重复读。
+<h4>3.<code>cache_edits</code>是什么</h4>
+当上下文太长时，Claude Code也不会粗暴地推倒重来，而是会通过<code>cache_edits</code>做缓存编辑，
+
+它的作用是：告诉服务端，哪些旧的 <code>cache_reference</code>不值得保留，可以删掉。
+
+这意味着Claude Code的上下文治理，不是"整个缓存失效重新算"，而是：
+<ul>
+ 	<li>尽量保住前缀</li>
+ 	<li>精确删掉尾部不再重要的旧结果引用</li>
+</ul>
+这是非常agent runtime的思路：在每轮对话中都尽量去维护最长的那段稳定前缀。
+<h3>四、fork子代理如何共享缓存</h3>
+如果是普通子代理，大家往往会想当然地：
+<ul>
+ 	<li>重新生成 system prompt</li>
+ 	<li>重新拼历史</li>
+ 	<li>带上新的任务说明</li>
+ 	<li>各自起一套上下文</li>
+</ul>
+但Claude Code不怎么做，它在fork子代理时刻意追求：<strong>byte-identical API request prefixes</strong>，也就是：多个API请求在"前半段内容"上，必须做到字节级完全一致。
+
+具体做法是：
+<ul>
+ 	<li>直接复用父线程已经渲染好的 system prompt</li>
+ 	<li>保留父 assistant message 的完整结构</li>
+ 	<li>把所有相关 tool_result 都替换成完全一致的占位内容</li>
+ 	<li>只有最后那段指令文本不同</li>
+</ul>
+这样多个 fork child 会共享非常长的一段公共前缀，只有最后一点点变化。
+<ul>
+ 	<li>对模型来说，每个子代理任务不同</li>
+ 	<li>对缓存来说，它们又尽量像“同一个请求的大前缀”</li>
+</ul>
+<h3>五、怎么判断缓存是否命中</h3>
+Claude Code专门做了cache break检测。
+
+最直接的指标就是 usage：
+<ul>
+ 	<li><code>cache_creation_input_tokens</code></li>
+ 	<li><code>cache_read_input_tokens</code></li>
+</ul>
+你可以粗暴理解成：
+<ul>
+ 	<li><code>cache_creation_input_tokens &gt; 0</code>
+说明这次有一段新的输入前缀被写入缓存</li>
+ 	<li><code>cache_read_input_tokens &gt; 0</code>
+说明这次真的从已有缓存里读到了前缀，发生了命中</li>
+</ul>
+更进一步，Claude Code 还有专门的 cache break detection 逻辑：
+<ul>
+ 	<li>请求前，记录当前 prompt/tool/model/header 的状态</li>
+ 	<li>请求后，看 <code>cache_read_input_tokens</code> 是否显著下降</li>
+ 	<li>如果下降，再推断原因到底是：
+<ul>
+ 	<li>model 变了</li>
+ 	<li>system prompt 变了</li>
+ 	<li>tools 变了</li>
+ 	<li>beta/header 变了</li>
+ 	<li>TTL 过期了</li>
+</ul>
+</li>
+</ul>
+cache break的作用是帮你检测缓存是不是失效了，否则你只能看到模型明明在正常回答，但是越来越贵，越来越慢，而你不知道原因在哪，怎么去排查。
+<h2>如果我人为修改代码，那么缓存还能命中吗</h2>
+会，但是不会把整个缓存都打爆，更常见的是"部分命中"缓存，也就是变化点之前的公共前缀仍然命中，从变化点之后开始重新计算模型对尾部内容的处理。
+
+换句话说，改代码通常只是尾部发生变化，但是大面积的前缀并不会被修改。
+<h2>如何在实际使用中尽量避免缓存失效</h2>
+说了这么多原理，如何避免才是至关重要的，毕竟我们并不是去真正设计一个harness，而是日常中去大量使用它。
+
+实用的原则大概以下几条。
+
+<strong>1. 尽量在同一个会话里持续推进</strong>
+
+不要刚做两步就重开一个全新会话。同一会话的公共前缀越稳定，越容易持续命中。
+
+<strong>2.不要频繁切模型</strong>
+
+模型一变，基本就不是同一条 cache key 了。
+
+<strong>3.不要频繁切影响请求形态的模式</strong>
+
+例如 fast mode、某些 agentic mode、beta 开关。这些状态抖动很容易改变前缀协议形态。
+
+<strong>4.MCP 和工具环境尽量一开始就定好</strong>
+
+不要中途频繁连上/断开 MCP server，不然工具集合和提示信息可能会变化。
+
+<strong>5.让变化尽量发生在“尾部”</strong>
+
+正常改代码没问题。真正要避免的是不断回头重写很早期的上下文条件。
+
+<strong>6.如果要 fork，就尽量让它们共享同一个稳定父上下文</strong>
+
+不要人为给每个 fork child 注入风格不同的大前缀。
+<h2>结语</h2>
+<strong>在长生命周期 agent 里，最贵的不是一次回答，而是“每一轮都重新把同样的大前缀吃一遍”。</strong>
+
+Claude Code之所以强，不只是它会调模型，而是它已经把“如何让模型在很多轮里持续高效工作”做成了一套系统工程。
+
+而缓存命中，正是这套工程的核心之一。`} />

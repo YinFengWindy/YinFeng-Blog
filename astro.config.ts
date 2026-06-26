@@ -54,7 +54,7 @@ const exposeSingleSitemap = (): AstroIntegration => ({
 // https://astro.build/config
 export default defineConfig({
   // Top-Level Options
-  site: 'https://www.joyehuang.me',
+  site: 'https://www.windchant.online',
   // base: '/docs',
   trailingSlash: 'never',
 
